@@ -1,0 +1,389 @@
+// Prisma Schema for HospitalFlow
+// Covers Phase 0 (base) + Phase 1 (Auth & Users) + Phase 2-9 (full domain model)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────
+
+enum Role {
+  PATIENT
+  DOCTOR
+  RECEPTIONIST
+  ADMIN
+  BILLING
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CONFIRMED
+  CHECKED_IN
+  IN_QUEUE
+  IN_CONSULTATION
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  WAIVED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  UPI
+  OTHER
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+// ─── Auth & Users (Phase 1) ─────────────────────────────────────────
+
+model User {
+  id                  String    @id @default(cuid())
+  email               String    @unique
+  phone               String?   @unique
+  passwordHash        String
+  role                Role
+  isActive            Boolean   @default(true)
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  refreshTokens RefreshToken[]
+  patient       Patient?
+  doctor        Doctor?
+  staff         Staff?
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  token     String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Patient {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  dateOfBirth DateTime?
+  gender      String?
+  address     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  appointments Appointment[]
+
+  @@map("patients")
+}
+
+model Staff {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("staff")
+}
+
+// ─── Hospital Structure (Phase 2) ──────────────────────────────────
+
+model Department {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  doctors DoctorDepartment[]
+
+  @@map("departments")
+}
+
+model Doctor {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  specialization   String
+  bio              String?
+  consultationFee  Decimal  @db.Decimal(10, 2)
+  slotDurationMins Int      @default(15)
+  photoUrl         String?
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  departments      DoctorDepartment[]
+  schedules        Schedule[]
+  breaks           Break[]
+  leaves           Leave[]
+  slots            Slot[]
+  appointments     Appointment[]
+  consultationNotes ConsultationNote[]
+  calendarConnection CalendarConnection?
+  queueTokens      QueueToken[]
+
+  @@map("doctors")
+}
+
+model DoctorDepartment {
+  id           String     @id @default(cuid())
+  doctorId     String
+  doctor       Doctor     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@unique([doctorId, departmentId])
+  @@map("doctor_departments")
+}
+
+// ─── Scheduling (Phase 3) ──────────────────────────────────────────
+
+model Schedule {
+  id        String    @id @default(cuid())
+  doctorId  String
+  doctor    Doctor    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  dayOfWeek DayOfWeek
+  startTime String    // HH:mm format
+  endTime   String    // HH:mm format
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([doctorId])
+  @@map("schedules")
+}
+
+model Break {
+  id        String    @id @default(cuid())
+  doctorId  String
+  doctor    Doctor    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  dayOfWeek DayOfWeek
+  startTime String    // HH:mm format
+  endTime   String    // HH:mm format
+  label     String?   // e.g., "Lunch Break"
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([doctorId])
+  @@map("breaks")
+}
+
+model Leave {
+  id        String   @id @default(cuid())
+  doctorId  String
+  doctor    Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  reason    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([doctorId])
+  @@map("leaves")
+}
+
+model Holiday {
+  id          String   @id @default(cuid())
+  date        DateTime @unique @db.Date
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("holidays")
+}
+
+model Slot {
+  id        String   @id @default(cuid())
+  doctorId  String
+  doctor    Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  startTime DateTime
+  endTime   DateTime
+  isBooked  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  appointment Appointment?
+
+  // Core double-booking prevention (CONC-001)
+  @@unique([doctorId, startTime])
+  @@index([doctorId, startTime])
+  @@map("slots")
+}
+
+// ─── Appointments (Phase 4) ────────────────────────────────────────
+
+model Appointment {
+  id             String            @id @default(cuid())
+  patientId      String
+  patient        Patient           @relation(fields: [patientId], references: [id])
+  doctorId       String
+  doctor         Doctor            @relation(fields: [doctorId], references: [id])
+  slotId         String?           @unique
+  slot           Slot?             @relation(fields: [slotId], references: [id])
+  status         AppointmentStatus @default(BOOKED)
+  isWalkIn       Boolean           @default(false)
+  scheduledStart DateTime
+  scheduledEnd   DateTime
+  reason         String?
+  cancelReason   String?
+  idempotencyKey String?           @unique
+  followUpOf     String?           // References parent appointment ID
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  consultationNote ConsultationNote?
+  payment          Payment?
+  queueToken       QueueToken?
+  notifications    Notification[]
+
+  @@index([patientId])
+  @@index([doctorId, scheduledStart])
+  @@index([status])
+  @@map("appointments")
+}
+
+// ─── Queue (Phase 5) ───────────────────────────────────────────────
+
+model QueueToken {
+  id            String   @id @default(cuid())
+  appointmentId String   @unique
+  appointment   Appointment @relation(fields: [appointmentId], references: [id])
+  doctorId      String
+  doctor        Doctor   @relation(fields: [doctorId], references: [id])
+  tokenNumber   Int
+  date          DateTime @db.Date
+  checkedInAt   DateTime @default(now())
+
+  @@unique([doctorId, date, tokenNumber])
+  @@index([doctorId, date])
+  @@map("queue_tokens")
+}
+
+// ─── Consultations (Phase 6) ───────────────────────────────────────
+
+model ConsultationNote {
+  id            String      @id @default(cuid())
+  appointmentId String      @unique
+  appointment   Appointment @relation(fields: [appointmentId], references: [id])
+  doctorId      String
+  doctor        Doctor      @relation(fields: [doctorId], references: [id])
+  notes         String?
+  diagnosis     String?
+  prescription  String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@map("consultation_notes")
+}
+
+// ─── Calendar (Phase 7) ────────────────────────────────────────────
+
+model CalendarConnection {
+  id            String    @id @default(cuid())
+  doctorId      String    @unique
+  doctor        Doctor    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  refreshToken  String    // Encrypted at rest
+  accessToken   String?
+  tokenExpiry   DateTime?
+  calendarId    String?
+  lastSyncAt    DateTime?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("calendar_connections")
+}
+
+// ─── Notifications (Phase 8) ───────────────────────────────────────
+
+model Notification {
+  id            String   @id @default(cuid())
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
+  recipientId   String   // User ID
+  type          String   // CONFIRMATION, REMINDER, CANCELLATION, RESCHEDULE, QUEUE_UPDATE
+  channel       String   // EMAIL, PUSH, SMS
+  subject       String?
+  body          String
+  status        String   @default("PENDING") // PENDING, SENT, FAILED
+  attempts      Int      @default(0)
+  lastError     String?
+  sentAt        DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([recipientId])
+  @@index([appointmentId])
+  @@index([status])
+  @@map("notifications")
+}
+
+// ─── Billing (Phase 9) ─────────────────────────────────────────────
+
+model Payment {
+  id            String        @id @default(cuid())
+  appointmentId String        @unique
+  appointment   Appointment   @relation(fields: [appointmentId], references: [id])
+  amount        Decimal       @db.Decimal(10, 2)
+  status        PaymentStatus @default(UNPAID)
+  method        PaymentMethod?
+  transactionId String?       @unique
+  paidAt        DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@map("payments")
+}
+
+// ─── Audit (Phase 10) ──────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String   // CREATE, UPDATE, DELETE, ACCESS, LOGIN, LOGOUT
+  entity     String   // appointment, schedule, consultation_note, etc.
+  entityId   String?
+  details    Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
